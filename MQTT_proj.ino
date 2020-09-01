@@ -215,14 +215,14 @@ void connectToAWS()
 {
   // Configure WiFiClientSecure to use the AWS certificates we generated
   net.setCACert(AWS_CERT_CA);
-  
-  char cert[AWS_CERT_CRT.length() + 1];
-  AWS_CERT_CRT.toCharArray(cert, AWS_CERT_CRT.length() + 1);
-  net.setCertificate(cert);
 
-  char key[AWS_CERT_PRIVATE.length() + 1];
-  AWS_CERT_PRIVATE.toCharArray(key, AWS_CERT_PRIVATE.length() + 1);
-  net.setPrivateKey(key);
+  //  char cert[AWS_CERT_CRT.length() + 1];
+  //  AWS_CERT_CRT.toCharArray(cert, AWS_CERT_CRT.length() + 1);
+  net.setCertificate(AWS_CERT_CRT_ck);
+
+  //  char key[AWS_CERT_PRIVATE.length() + 1];
+  //  AWS_CERT_PRIVATE.toCharArray(key, AWS_CERT_PRIVATE.length() + 1);
+  net.setPrivateKey(AWS_CERT_PRIVATE_ck);
 
   char endpt[AWS_IOT_ENDPOINT.length() + 1];
   AWS_IOT_ENDPOINT.toCharArray(endpt, AWS_IOT_ENDPOINT.length() + 1);
@@ -463,13 +463,13 @@ void ReadFiles() {
           Serial.print("Thing name is: ");
           Serial.println(AWS_IOT_THING_NAME);
           Serial.print("End Point is: ");
-          Serial.print(AWS_IOT_ENDPOINT);
+          Serial.println(AWS_IOT_ENDPOINT);
 
-          Serial.print("Check Result for Cert");
-          Serial.println(AWS_CERT_CRT.equals(String(AWS_CERT_CRT_ck)));
+          Serial.print("Check Result for Cert : ");
+          Serial.println((AWS_CERT_CRT.equals(String(AWS_CERT_CRT_ck))) ? "true" : "false");
 
-          Serial.print("Check Result for Private Key");
-          Serial.println(AWS_CERT_PRIVATE.equals(String(AWS_CERT_PRIVATE_ck)));
+          Serial.print("Check Result for Private Key : ");
+          Serial.println((AWS_CERT_PRIVATE.equals(String(AWS_CERT_PRIVATE_ck))) ? "true" : "false");
           connectToAWS();
           client.onMessage(callback);
           conf = false;
@@ -812,11 +812,32 @@ void loop() {
     client_esp.loop();
 
   if (sen) {
+    StaticJsonDocument<150> doc;
+
+    char json[sendata.length() + 1];
+    sendata.toCharArray(json, sendata.length() + 1);
+    Serial.print("Json : ");
+    for (int i = 0; i < strlen(json); i++ ) {
+      Serial.print(json[i]);
+    }
+    Serial.println();
+    Serial.println("Converted string to json");
+
+    deserializeJson(doc, json);
+
+    serializeJsonPretty(doc, Serial);
+
+    String Data = doc["Data"];
+    int Command = doc["Command"];
     Serial.print("Sending: ");
-    Serial.println(sendata);
+    Serial.print("(Command) ");
+    Serial.print(Command);
+    Serial.print(" (Data) ");
+    Serial.println(Data);
     Serial2.write('s');
-    for (int i = 0; i < sendata.length(); i++) {
-      Serial2.write((char)sendata[i]);
+    Serial2.write(Command);
+    for (int i = 0; i < Data.length(); i++) {
+      Serial2.write((char)Data[i]);
     }
     Serial2.write('\n');
     sen = false;
