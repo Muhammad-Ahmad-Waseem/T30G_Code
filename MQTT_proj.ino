@@ -15,6 +15,8 @@
 //// The MQTT topic that this device should publish to
 //#define AWS_IOT_TOPIC "Iot_mqtt"
 
+#define MAX_ERROR_THRESHOLD 60 //(APPROX 1 MINUTE)
+
 // How many times we should attempt to connect to AWS
 #define AWS_MAX_RECONNECT_TRIES 50
 // Update these with values suitable for your network.
@@ -43,7 +45,7 @@ const char AWS_CERT_CA[] = "-----BEGIN CERTIFICATE-----\n" \
 
 char* ver = "0.01";
 bool heartbeat = false, sen = false, conf, Con_type;
-int bid = 0, mid = 0;
+int bid = 0, mid = 0, noErr = 0;
 byte mac[6];
 String sendata = "";
 String rd;
@@ -53,6 +55,8 @@ String ssid, password;
 
 //Topics
 String TOPIC_SUB, TOPIC_PUB;
+
+String commands[] = {"write", "read", "subscribe"};
 //Aws credentials
 String AWS_IOT_ENDPOINT, AWS_IOT_THING_NAME, AWS_CERT_PRIVATE, AWS_CERT_CRT;
 //Other platform credentials
@@ -216,13 +220,13 @@ void connectToAWS()
   // Configure WiFiClientSecure to use the AWS certificates we generated
   net.setCACert(AWS_CERT_CA);
 
-  //  char cert[AWS_CERT_CRT.length() + 1];
-  //  AWS_CERT_CRT.toCharArray(cert, AWS_CERT_CRT.length() + 1);
-  net.setCertificate(AWS_CERT_CRT_ck);
+  char cert[AWS_CERT_CRT.length() + 1];
+  AWS_CERT_CRT.toCharArray(cert, AWS_CERT_CRT.length() + 1);
+  net.setCertificate(cert);
 
-  //  char key[AWS_CERT_PRIVATE.length() + 1];
-  //  AWS_CERT_PRIVATE.toCharArray(key, AWS_CERT_PRIVATE.length() + 1);
-  net.setPrivateKey(AWS_CERT_PRIVATE_ck);
+  char key[AWS_CERT_PRIVATE.length() + 1];
+  AWS_CERT_PRIVATE.toCharArray(key, AWS_CERT_PRIVATE.length() + 1);
+  net.setPrivateKey(key);
 
   char endpt[AWS_IOT_ENDPOINT.length() + 1];
   AWS_IOT_ENDPOINT.toCharArray(endpt, AWS_IOT_ENDPOINT.length() + 1);
@@ -459,15 +463,16 @@ void ReadFiles() {
 
           AWS_IOT_THING_NAME.trim();
           AWS_IOT_ENDPOINT.trim();
-
+          AWS_CERT_CRT.trim();
+          AWS_CERT_CRT += '\n';
+          AWS_CERT_PRIVATE.trim();
+          AWS_CERT_PRIVATE += '\n';
           Serial.print("Thing name is: ");
           Serial.println(AWS_IOT_THING_NAME);
           Serial.print("End Point is: ");
           Serial.println(AWS_IOT_ENDPOINT);
-
           Serial.print("Check Result for Cert : ");
           Serial.println((AWS_CERT_CRT.equals(String(AWS_CERT_CRT_ck))) ? "true" : "false");
-
           Serial.print("Check Result for Private Key : ");
           Serial.println((AWS_CERT_PRIVATE.equals(String(AWS_CERT_PRIVATE_ck))) ? "true" : "false");
           connectToAWS();
@@ -549,6 +554,15 @@ void ReadFiles() {
   }
 
 }
+
+int checkCommand(String command) {
+  for (int i = 0; i < 4; i++) {
+    if (command.equalsIgnoreCase(commands[i]))
+      return i + 1;
+  }
+  return 0;
+}
+
 void setup() {
   Serial.begin(115200);
 
@@ -563,6 +577,12 @@ void setup() {
   Serial.println("reboot");
   listDir(SPIFFS, "/", 0);
 
+}
+int hexCharToInt(char c) {
+  int val = (int)c;
+  if ((val >= 'A' && val <= 'F'))
+    val = 9 + (val % 16);
+  return val % 16;
 }
 
 void loop() {
@@ -812,42 +832,128 @@ void loop() {
     client_esp.loop();
 
   if (sen) {
-    StaticJsonDocument<150> doc;
+    StaticJsonDocument<200> doc;
 
     char json[sendata.length() + 1];
     sendata.toCharArray(json, sendata.length() + 1);
-    Serial.print("Json : ");
-    for (int i = 0; i < strlen(json); i++ ) {
-      Serial.print(json[i]);
+    DeserializationError error = deserializeJson(doc, json);
+
+    // Test if parsing succeeds.
+    if (error) {
+      Serial.print(F("deserializeJson() failed: "));
+      Serial.println(error.c_str());
     }
-    Serial.println();
-    Serial.println("Converted string to json");
+    else {
+      //deserializeJson(doc, json);
+      String command = doc["Command"];
+      String _mac = doc["Mac"];
+      String ser = doc["Service_UUID"];
+      String chr = doc["Characteristic_UUID"];
+      String dat = doc["Data"];
+      String Data = _mac + ser + chr + dat;
 
-    deserializeJson(doc, json);
+      int _command = checkCommand(command);
+      bool _valid = false;
+      if (_command == 1 && Data.length() >= 78) {
+        _valid = true;
+      }
+      else if (_command == 2 && Data.length() == 78) {
+        _valid = true;
+      }
+      else if (_command == 3 && Data.length() == 80) {
+        _valid = true;
+      }
+      if (_valid) {
+        Serial.print("Sending: ");
+        Serial.print("(Command) ");
+        Serial.print(_command);
+        Serial.print(" (Data) ");
+        Serial.println(Data);
+        Serial2.write('s');
+        Serial2.write(_command);
+        Serial2.print(Data);
+        //        Serial2.print(mac);
+        //        Serial2.print(ser);
+        //        Serial2.print(chr);
+        //        Serial2.print(dat);
 
-    serializeJsonPretty(doc, Serial);
+        //        for (int i = 0; i < Data.length(); i++) {
+        //          Serial2.write((char)Data[i]);
+        //        }
+        Serial2.write('\n');
+      }
+      else {
+        Serial.println("Wrong Data ");
+        StaticJsonDocument<300> doc;
+        WiFi.macAddress(mac);
+        char hexCar[2];
+        String mac_hex = "";
+        for (int i = 0; i < 6; i++) {
+          sprintf(hexCar, "%02X", mac[i]);
+          mac_hex += hexCar;
+        }
+        rd.toUpperCase();
+        doc["MAC"] = mac_hex;
+        doc["RSSI"] = WiFi.RSSI();
+        String LocalIP = String() + WiFi.localIP()[0] + "." + WiFi.localIP()[1] + "." + WiFi.localIP()[2] + "." + WiFi.localIP()[3];
+        doc["IP"] = LocalIP;
+        doc["Ver"] = ver;
+        doc["MSG_Type"] = "Invalid Data Entered";
+        String pub;
+        serializeJsonPretty(doc, pub);
+        //Convert to char array to publish
+        char pubdata[pub.length() + 1];
+        pub.toCharArray(pubdata, pub.length() + 1);
+        Serial.println(pubdata);
 
-    String Data = doc["Data"];
-    int Command = doc["Command"];
-    Serial.print("Sending: ");
-    Serial.print("(Command) ");
-    Serial.print(Command);
-    Serial.print(" (Data) ");
-    Serial.println(Data);
-    Serial2.write('s');
-    Serial2.write(Command);
-    for (int i = 0; i < Data.length(); i++) {
-      Serial2.write((char)Data[i]);
+        char publis[TOPIC_PUB.length() + 1];
+        TOPIC_PUB.toCharArray(publis, TOPIC_PUB.length() + 1);
+        bool _sendData;
+        if (Con_type)
+          _sendData = client.publish(publis, pubdata);
+        else
+          _sendData = (client_esp.publish(publis, pubdata));
+        if (_sendData) {
+          Serial.println("Data Published");
+          noErr = 0;
+        }
+        else {
+          Serial.println("Error in publishing data");
+          noErr ++;
+        }
+      }
     }
-    Serial2.write('\n');
     sen = false;
     sendata = "";
   }
-
+  if (noErr > MAX_ERROR_THRESHOLD) {
+    Serial.println("Limit Reached");
+    if (WiFi.status() != WL_CONNECTED) {
+      if (Con_type)
+        client.disconnect();
+      else
+        client_esp.disconnect();
+      WiFi.disconnect();
+      setup_wifi();
+      if (Con_type)
+        connectToAWS();
+      else
+        ConnecttoNonAws();
+      noErr = 0;
+    }
+    else if (Con_type && !client.connected()) {
+      client.disconnect();
+      connectToAWS();
+    }
+    else if (!Con_type && !client_esp.connected()) {
+      client_esp.disconnect();
+      ConnecttoNonAws();
+    }
+  }
   if (Serial2.available() > 0) {
     char c;
     c = Serial2.read();
-
+    Serial.print(c);
     if (c == 'Y') {
       rd = "";
       int i = 0;
@@ -872,6 +978,132 @@ void loop() {
       Serial.print("Data Recieved : ");
       Serial.println(rd);
       if (SendData(rd)) {
+        Serial.println("Data Published");
+        noErr = 0;
+      }
+      else {
+        Serial.println("Error in publishing data");
+        noErr ++;
+      }
+    }
+    else if (c == 'U') {
+      rd = "";
+      while (c != '\n') {
+        if (Serial2.available())
+        {
+          c = Serial2.read();
+          Serial.print(c);
+          rd += (char) c;
+        }
+      }
+      Serial.println("Notify Data Recieved");
+      Serial.println(rd);
+      StaticJsonDocument<700> doc;
+      WiFi.macAddress(mac);
+      char hexCar[2];
+      String mac_hex = "";
+      for (int i = 0; i < 6; i++) {
+        sprintf(hexCar, "%02X", mac[i]);
+        mac_hex += hexCar;
+      }
+      rd.toUpperCase();
+      doc["MAC"] = mac_hex;
+      doc["RSSI"] = WiFi.RSSI();
+      String LocalIP = String() + WiFi.localIP()[0] + "." + WiFi.localIP()[1] + "." + WiFi.localIP()[2] + "." + WiFi.localIP()[3];
+      doc["IP"] = LocalIP;
+      doc["Ver"] = ver;
+      String strBidHex = rd.substring(1, 3);
+      int val1 = hexCharToInt(strBidHex.charAt(0));
+      int val2 = hexCharToInt(strBidHex.charAt(1));
+      uint8_t intBid = (((val1) << 4) & (0xF0)) + ((val2) & 0x0F);
+      doc["BID"] = intBid;
+      String strMidHex = rd.substring(3, 5);
+      val1 = hexCharToInt(strMidHex.charAt(0));
+      val2 = hexCharToInt(strMidHex.charAt(1));
+      uint8_t intMid = (((val1) << 4) & (0xF0)) + ((val2) & 0x0F);
+      doc["MID"] = intMid;
+      if (rd.charAt(0) == 'R') {
+        doc["Device_MAC"] = rd.substring(7, 19);
+        doc["MSG_Type"] = "Records";
+        String strCntHex = rd.substring(5, 7);
+        val1 = hexCharToInt(strCntHex.charAt(0));
+        val2 = hexCharToInt(strCntHex.charAt(1));
+        uint8_t intCnt = (((val1) << 4) & (0xF0)) + ((val2) & 0x0F);
+        doc["R_Record_Count"] = intCnt;
+        doc["Records"] = rd.substring(19, rd.length() - 1);
+      }
+      if (rd.charAt(0) == 'N') {
+        doc["Device_MAC"] = rd.substring(5, 17);
+        doc["MSG_Type"] = "NOTIFY DATA";
+        doc["Packet"] = rd.substring(17, rd.length() - 1);
+      }
+      String pub;
+      serializeJsonPretty(doc, pub);
+      //Convert to char array to publish
+      char pubdata[pub.length() + 1];
+      pub.toCharArray(pubdata, pub.length() + 1);
+      Serial.println(pubdata);
+
+      char publis[TOPIC_PUB.length() + 1];
+      TOPIC_PUB.toCharArray(publis, TOPIC_PUB.length() + 1);
+      bool _sendData;
+      if (Con_type)
+        _sendData = client.publish(publis, pubdata);
+      else
+        _sendData = (client_esp.publish(publis, pubdata));
+      if (_sendData) {
+        Serial.println("Data Published");
+        noErr = 0;
+      }
+      else {
+        Serial.println("Error in publishing data");
+        noErr ++;
+      }
+    }
+    else if (c == 'W') {
+      rd = "";
+      while (c != '\n') {
+        if (Serial2.available())
+        {
+          c = Serial2.read();
+          Serial.print(c);
+          rd += (char) c;
+        }
+      }
+      Serial.println("Read Data Recieved");
+      Serial.println(rd);
+      StaticJsonDocument<300> doc;
+      WiFi.macAddress(mac);
+      char hexCar[2];
+      String mac_hex = "";
+      for (int i = 0; i < 6; i++) {
+        sprintf(hexCar, "%02X", mac[i]);
+        mac_hex += hexCar;
+      }
+      rd.toUpperCase();
+      doc["MAC"] = mac_hex;
+      doc["RSSI"] = WiFi.RSSI();
+      String LocalIP = String() + WiFi.localIP()[0] + "." + WiFi.localIP()[1] + "." + WiFi.localIP()[2] + "." + WiFi.localIP()[3];
+      doc["IP"] = LocalIP;
+      doc["Ver"] = ver;
+      doc["Device_MAC"] = rd.substring(0, 12);
+      doc["MSG_Type"] = "READ FROM DEVICE";
+      doc["Data"] = rd.substring(12, rd.length() - 1);
+      String pub;
+      serializeJsonPretty(doc, pub);
+      //Convert to char array to publish
+      char pubdata[pub.length() + 1];
+      pub.toCharArray(pubdata, pub.length() + 1);
+      Serial.println(pubdata);
+
+      char publis[TOPIC_PUB.length() + 1];
+      TOPIC_PUB.toCharArray(publis, TOPIC_PUB.length() + 1);
+      bool _sendData;
+      if (Con_type)
+        _sendData = client.publish(publis, pubdata);
+      else
+        _sendData = (client_esp.publish(publis, pubdata));
+      if (_sendData) {
         Serial.println("Data Published");
       }
       else {
@@ -898,5 +1130,6 @@ void loop() {
       }
       //conf = true;
     }
+
   }
 }
