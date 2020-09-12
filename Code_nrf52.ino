@@ -64,7 +64,7 @@ int filtRss = -100;//(integer between -50 to -100)
 //An array to keep track of all scanned mac adresses in one second, str is used to concatenate all data of all unique adresses. macadd will contain required
 // mac address to which we need to make a connection. mac will temporarily have scanned peripheral and will compare it with macadd. inp will be a string
 // recieved from esp containing mac adress and value.
-String adv_devices[devs], scan_resp_devices[devs], str = "", mac = "", rss, inp, hex_data, len, config_data, write_mac, cert = "", key = "", strRecords,buffRecs="", outVal = "", val = "",  deciveMac;// = "d094ef9c4619";
+String adv_devices[devs], scan_resp_devices[devs], str = "", mac = "", rss, inp, hex_data, len, config_data, write_mac, cert = "", key = "", strRecords, buffRecs = "", outVal = "", val = "",  deciveMac; // = "d094ef9c4619";
 
 // constants won't change. They're used here to set pin numbers:
 const int buttonPin = 5;     // the number of the pushbutton pin(P0.05)
@@ -89,7 +89,7 @@ void scan_callback(ble_gap_evt_adv_report_t* report)
     sprintf(hexCar, "%02X", addr[i]);
     mac += hexCar;
   }
-
+  
   if (con && write_mac != NULL) {
     Serial.print("Found mac : ");
     Serial.println(mac);
@@ -198,6 +198,7 @@ void setup() {
   //pressed = true;
   Serial1.begin(115200);  //Rx=P1.01, Tx = P1.02
   delay(500);
+  Serial1.print('\n');
   if (pressed) {
     Serial1.write('Z');
     Serial1.print("conf");
@@ -998,6 +999,9 @@ void loop() {
     if (con && !found && (millis() - cur > 10000)) {
       Serial.print("Time out searching for mac: ");
       Serial.println(write_mac);
+      Serial1.print('E');
+      Serial1.print('7');
+      Serial1.print('\n');
       Bluefruit.Scanner.filterUuid(FILTER_SERVICE_UUID);
       con = false;
       sen = false;
@@ -1290,7 +1294,9 @@ void connect_callback2(uint16_t conn_handle)
     if ( !service_beacon.discover(conn_handle) )
     {
       Serial.println("No Service Found");
-
+      Serial1.print('E');
+      Serial1.print('1');
+      Serial1.print('\n');
       // disconnect since we couldn't find service
       Bluefruit.disconnect(conn_handle);
       return;
@@ -1303,14 +1309,27 @@ void connect_callback2(uint16_t conn_handle)
     {
       // Measurement chr is mandatory, if it is not found (valid), then disconnect
       Serial.println("No Characteristic Found. Characteristic is mandatory but not found. ");
+      Serial1.print('E');
+      Serial1.print('2');
+      Serial1.print('\n');
       Bluefruit.disconnect(conn_handle);
       return;
     }
     Serial.println("Characteristic Found");
     delay(500);
+    uint8_t props =  characteristic_beacon.properties();
+    Serial.println(props,HEX);
     switch (_command) {
       case 1:
         {
+          if (((props & 0x08) != 0x08) || (props & 0x04 != 0x04)) {
+            Serial.println("Write Permissions not enabled...!");
+            Serial1.print('E');
+            Serial1.print('3');
+            Serial1.print('\n');
+            Bluefruit.disconnect(conn_handle);
+            return;
+          }
           Serial.print("Writing Value: ");
           int _size = val.length() / 2;
           uint8_t key[_size];
@@ -1332,12 +1351,18 @@ void connect_callback2(uint16_t conn_handle)
 
           delay(200);
           Bluefruit.disconnect(conn_handle);
-          con = false;
-          found = false;
         }
         break;
       case 2:
         {
+          if ((props & 0x02) != 0x02) {
+            Serial.println("Read Permissions not enabled...!");
+            Serial1.print('E');
+            Serial1.print('4');
+            Serial1.print('\n');
+            Bluefruit.disconnect(conn_handle);
+            return;
+          }
           int val1 = hexCharToInt(val.charAt(0));
           int val2 = hexCharToInt(val.charAt(1));
           uint8_t _readBytes = (((val1) << 4) & (0xF0)) + ((val2) & 0x0F);
@@ -1360,26 +1385,35 @@ void connect_callback2(uint16_t conn_handle)
             _readData = true;
           }
           else {
-            Serial.println("Read Fialed");
+            Serial.println("Read Fialed due to unknown reason");
+            Serial1.print('E');
+            Serial1.print('5');
+            Serial1.print('\n');
           }
           delay(200);
           Bluefruit.disconnect(conn_handle);
-          con = false;
-          found = false;
         }
         break;
       case 3:
         {
+          if ((props & 0x10) != 0x10) {
+            Serial.println("Notification Property not found...!");
+            Serial1.print('E');
+            Serial1.print('6');
+            Serial1.print('\n');
+            Bluefruit.disconnect(conn_handle);
+            return;
+          }
           bidN = 1;
           midN = 1;
           strRecords = "";
           characteristic_beacon.setNotifyCallback(notify_callback);
           uint16_t items;
-          
+
           int val1 = hexCharToInt(val.charAt(0));
           int val2 = hexCharToInt(val.charAt(1));
           int val3 = hexCharToInt(val.charAt(2));
-          int val4 = hexCharToInt(val.charAt(3));          
+          int val4 = hexCharToInt(val.charAt(3));
           uint8_t _value1 = (((val1) << 4) & (0xF0)) + ((val2) & 0x0F);
           uint8_t _value2 = (((val3) << 4) & (0xF0)) + ((val4) & 0x0F);
           items = (((_value2) << 8) & (0xFF00)) + (((_value1) & 0x00FF));
@@ -1410,7 +1444,6 @@ void connect_callback2(uint16_t conn_handle)
         break;
     }
   }
-
 }
 
 int hexCharToInt(char c) {
@@ -1431,9 +1464,11 @@ void disconnect_callback2(uint16_t conn_handle, uint8_t reason)
   (void) reason;
 
   Serial.println();
+  delay(100);
   Serial.print("Disconnected, reason = 0x"); Serial.println(reason, HEX);
   con = false;
   sen = false;
+  found = false;
   Bluefruit.Scanner.filterUuid(FILTER_SERVICE_UUID);
 }
 
@@ -1455,7 +1490,7 @@ void notify_callback(BLEClientCharacteristic* chr, uint8_t* data, uint16_t len)
     if (CurrentItems >= dataItems) {
       _dataComplete = true;
       buffRecs = strRecords;
-      strRecords = ""; 
+      strRecords = "";
     }
     else if (CurrentItems % BUFFSIZE == 0) {
       _buffComplete = true;

@@ -15,7 +15,7 @@
 //// The MQTT topic that this device should publish to
 //#define AWS_IOT_TOPIC "Iot_mqtt"
 
-#define MAX_ERROR_THRESHOLD 60 //(APPROX 1 MINUTE)
+#define MAX_ERROR_THRESHOLD 50 //(APPROX 1 MINUTE)
 
 // How many times we should attempt to connect to AWS
 #define AWS_MAX_RECONNECT_TRIES 50
@@ -898,7 +898,8 @@ void loop() {
         String LocalIP = String() + WiFi.localIP()[0] + "." + WiFi.localIP()[1] + "." + WiFi.localIP()[2] + "." + WiFi.localIP()[3];
         doc["IP"] = LocalIP;
         doc["Ver"] = ver;
-        doc["MSG_Type"] = "Invalid Data Entered";
+        doc["MSG_Type"] = "Error Response";
+        doc["Error_Type"] = "Invalid Data Entered";
         String pub;
         serializeJsonPretty(doc, pub);
         //Convert to char array to publish
@@ -978,6 +979,82 @@ void loop() {
       Serial.print("Data Recieved : ");
       Serial.println(rd);
       if (SendData(rd)) {
+        Serial.println("Data Published");
+        noErr = 0;
+      }
+      else {
+        Serial.println("Error in publishing data");
+        noErr ++;
+      }
+    }
+    else if (c == 'E') {
+      rd = "";
+      while (c != '\n') {
+        if (Serial2.available())
+        {
+          c = Serial2.read();
+          Serial.print(c);
+          rd += (char) c;
+        }
+      }
+      Serial.println("Error Message Recieved");
+      Serial.println(rd);
+      StaticJsonDocument<300> doc;
+      WiFi.macAddress(mac);
+      char hexCar[2];
+      String mac_hex = "";
+      for (int i = 0; i < 6; i++) {
+        sprintf(hexCar, "%02X", mac[i]);
+        mac_hex += hexCar;
+      }
+      rd.toUpperCase();
+      doc["MAC"] = mac_hex;
+      doc["RSSI"] = WiFi.RSSI();
+      String LocalIP = String() + WiFi.localIP()[0] + "." + WiFi.localIP()[1] + "." + WiFi.localIP()[2] + "." + WiFi.localIP()[3];
+      doc["IP"] = LocalIP;
+      doc["Ver"] = ver;
+      doc["MSG_Type"] = "Error Response";
+      switch (rd.charAt(0)) {
+        case '1':
+          doc["Error_Type"] = "Service Not Found";
+          break;
+        case '2':
+          doc["Error_Type"] = "Characteristic  Not Found";
+          break;
+        case '3':
+          doc["Error_Type"] = "Write Failed: Permissions Not Found";
+          break;
+        case '4':
+          doc["Error_Type"] = "Read Failed: Permission Not Found";
+          break;
+        case '5':
+          doc["Error_Type"] = "Read Failed: Could Not Read";
+          break;
+        case '6':
+          doc["Error_Type"] = "Subscription Failed: Permission Not Found";
+          break;
+        case '7':
+          doc["Error_Type"] = "Mac Address not Found: Timeout";
+          break;
+        default:
+          doc["Error_Type"] = "Unknown Error";
+          break;
+      }
+      String pub;
+      serializeJsonPretty(doc, pub);
+      //Convert to char array to publish
+      char pubdata[pub.length() + 1];
+      pub.toCharArray(pubdata, pub.length() + 1);
+      Serial.println(pubdata);
+
+      char publis[TOPIC_PUB.length() + 1];
+      TOPIC_PUB.toCharArray(publis, TOPIC_PUB.length() + 1);
+      bool _sendData;
+      if (Con_type)
+        _sendData = client.publish(publis, pubdata);
+      else
+        _sendData = (client_esp.publish(publis, pubdata));
+      if (_sendData) {
         Serial.println("Data Published");
         noErr = 0;
       }
