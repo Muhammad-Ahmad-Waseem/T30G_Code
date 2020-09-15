@@ -1,3 +1,8 @@
+#if CONFIG_FREERTOS_UNICORE
+#define ARDUINO_RUNNING_CORE 0
+#else
+#define ARDUINO_RUNNING_CORE 1
+#endif
 
 #include <WiFi.h>
 #include <PubSubClient.h>
@@ -8,18 +13,8 @@
 #include "SPIFFS.h"
 
 #define FORMAT_SPIFFS_IF_FAILED true
-
-//// The MQTTT endpoint for the device (unique for each AWS account but shared amongst devices within the account)
-//#define AWS_IOT_ENDPOINT "akp17u3blui5g-ats.iot.us-west-2.amazonaws.com"
-
-//// The MQTT topic that this device should publish to
-//#define AWS_IOT_TOPIC "Iot_mqtt"
-
-#define MAX_ERROR_THRESHOLD 50 //(APPROX 1 MINUTE)
-
-// How many times we should attempt to connect to AWS
-#define AWS_MAX_RECONNECT_TRIES 50
-// Update these with values suitable for your network.
+#define MAX_ERROR_THRESHOLD 30 //Threshold for esp when we recieved continuous error(APPROX  scan_duration * 0.030)
+#define AWS_MAX_RECONNECT_TRIES 10 // reties to connect
 
 // Amazon's root CA. This should be the same for everyone.
 const char AWS_CERT_CA[] = "-----BEGIN CERTIFICATE-----\n" \
@@ -56,6 +51,7 @@ String ssid, password;
 //Topics
 String TOPIC_SUB, TOPIC_PUB;
 
+//valid commands recieved from AWS
 String commands[] = {"write", "read", "subscribe"};
 //Aws credentials
 String AWS_IOT_ENDPOINT, AWS_IOT_THING_NAME, AWS_CERT_PRIVATE, AWS_CERT_CRT;
@@ -68,58 +64,9 @@ MQTTClient client = MQTTClient(1024);
 WiFiClient espClient;
 PubSubClient client_esp(espClient);
 
-// The private key for your device(just to check recieved one is matched)
-char AWS_CERT_PRIVATE_ck[] = "-----BEGIN RSA PRIVATE KEY-----\n" \
-                             "MIIEpAIBAAKCAQEAs5EixDgzOrW+Cc/Uev/HXJL26a/pK+EzhS8iAoXhJgVWrmsb\n" \
-                             "kfhH/IWajdRvVth2d/TJVLjliYYf6zAXSn8CIS31HP/i2BkFrWMLxO9cNebB3xps\n" \
-                             "+CQNPpRtHBd4yV3ufizb/leqXmYU+bLIjwEg09tSjRqC3uBi5teoJ+b8bRXZvm66\n" \
-                             "e4c9Gddi2GVak+kuiimTxSIwU4WlN2DEzbfRaZZ6waXgxppvOpHNXOihtffeyZpW\n" \
-                             "ZKXIRXSwkqaiBxO3pfWNXT+Sqh8iVGiHgl/Xxq/67Pxqyl2GiZKf8bOqgiH+cneK\n" \
-                             "RqGbkASqQfPuMrtxK7dUo38Tmoh3PWZEYBvUdwIDAQABAoIBAAv3HNj0Yb2ExMAE\n" \
-                             "oET97Dvn8xoJRcFNxVAXnu2KHEGbU3ZV3sVwROO3x1+yCyU/UU2W+x9xHqJ2VIQo\n" \
-                             "dTTal7q8RDwFdQkvSaiPFAawaHWTBdInAaHbTSKhY0/e5IaOgsjXlmUxVEHsDXPC\n" \
-                             "DQkyawyS7cJHRPcy/oQhVKwsASAHmwou0kkd3W+ER/Nv0eOEFCjb0l2Vpn9jNYAQ\n" \
-                             "tLOJ7TpMhQ78dWYEaWC6+ovpHLwYNML97D3CGq09NdKBW3SQSIGscXwgP+Tp3Ny7\n" \
-                             "nlnVqwPlRV0nmC0wPqVCHovPaJzLSN+nn+5IWMASzrWZ9eAbiMZx4SQquT0UoF5E\n" \
-                             "4Gxo1LECgYEA6MgZE92wOAo76QqqOgXLXdZXRsfrrD+g85MORvKbi7g401OSQIX6\n" \
-                             "tn9AYl2RBcyo+ifNDyXiuPySCBM6c7wCGGXCWqPSsOHVoEqcMHAHZAldCBaHL6Bu\n" \
-                             "kkQKRdZR4/i1dTxZvBa2hu4cP4d/PbZmwmQdSVUYyauxyawYCnxHHY8CgYEAxXo9\n" \
-                             "tLB5BGTNCsqFLSOaZ6gKJ2OQq8MhUKp3JMun+xzzeDXFDPemu6eKrMb35qRBaygf\n" \
-                             "Rq16SPK362bKgU5O75+UgCFCcFcacrQBvUfsp/Aw0M/0EY4mxYVTmqdBZEZ7+RCR\n" \
-                             "yHKc/q7yoTjr9MaUh0UhbOiF+rAuHWxrFf8xNpkCgYEAr/GmOsTCD+l0VPVRqt98\n" \
-                             "UiXS+9XaBOxm/BO3o9p1xQpuMRSmo4xg7pWKFY9BMQ/63HE+5ect0cJdoirecGG3\n" \
-                             "d7daSmYutrFLZYdfPKFAhNUq8xUMAuyRBo7U8OpIJTZz+POvo6HLPns08LO6ceuv\n" \
-                             "Cdjf5fCi9rOGgrdHyI0ct3MCgYAJ6RWZsNWR8+Eabol6d3PzScqgqW2EQTm1y6hJ\n" \
-                             "D3NxtcU+PiySdwdGGaVrAF1GlO23i/7t1Bzz9kJmrPTywlRR0EdqmsCz1Js+MGx5\n" \
-                             "7FcjInnAsP8FtoWZmhRVCZnNh4AHQt6eGappWaxRjQLCeQjRNRX1WkIHD7pwvZUu\n" \
-                             "OG1m2QKBgQDdgK2Daj3CI6cA7/ngTPXwfKAZrUXkxlu+3+Xi2H4r0C8uw2Lkvboh\n" \
-                             "rh72Kjj2cW7etLo6k+LHn9BuGtHHfY1FyEGVM49HsIeTq9LLbnWeyUtbfI/M/VZA\n" \
-                             "EYaxfV5Ouv85GCzVIQGOwwlNg3otLcg0my/pwNTDPJka3zUdZ+z+Ig==\n" \
-                             "-----END RSA PRIVATE KEY-----\n";
-
-// The certificate for your device(just to check recieved one is matched)
-char AWS_CERT_CRT_ck[] = "-----BEGIN CERTIFICATE-----\n" \
-                         "MIIDWTCCAkGgAwIBAgIUfztjQb+CIna9soTp3BXMO1NqQ+QwDQYJKoZIhvcNAQEL\n" \
-                         "BQAwTTFLMEkGA1UECwxCQW1hem9uIFdlYiBTZXJ2aWNlcyBPPUFtYXpvbi5jb20g\n" \
-                         "SW5jLiBMPVNlYXR0bGUgU1Q9V2FzaGluZ3RvbiBDPVVTMB4XDTIwMDgwMzA5Mzc0\n" \
-                         "MVoXDTQ5MTIzMTIzNTk1OVowHjEcMBoGA1UEAwwTQVdTIElvVCBDZXJ0aWZpY2F0\n" \
-                         "ZTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBALORIsQ4Mzq1vgnP1Hr/\n" \
-                         "x1yS9umv6SvhM4UvIgKF4SYFVq5rG5H4R/yFmo3Ub1bYdnf0yVS45YmGH+swF0p/\n" \
-                         "AiEt9Rz/4tgZBa1jC8TvXDXmwd8abPgkDT6UbRwXeMld7n4s2/5Xql5mFPmyyI8B\n" \
-                         "INPbUo0agt7gYubXqCfm/G0V2b5uunuHPRnXYthlWpPpLoopk8UiMFOFpTdgxM23\n" \
-                         "0WmWesGl4MaabzqRzVzoobX33smaVmSlyEV0sJKmogcTt6X1jV0/kqofIlRoh4Jf\n" \
-                         "18av+uz8aspdhomSn/GzqoIh/nJ3ikahm5AEqkHz7jK7cSu3VKN/E5qIdz1mRGAb\n" \
-                         "1HcCAwEAAaNgMF4wHwYDVR0jBBgwFoAUT7ZA/sWeoybOcHF+smwVqjbHB5gwHQYD\n" \
-                         "VR0OBBYEFBIA1LzX6SE7jQKuKpYdowm6m38xMAwGA1UdEwEB/wQCMAAwDgYDVR0P\n" \
-                         "AQH/BAQDAgeAMA0GCSqGSIb3DQEBCwUAA4IBAQBJZ4h97I77Y2hPcYcpOL7zH3RU\n" \
-                         "AmButcDFvH3rTCSjONfqZlyvuW6VJegUvBPIBxcD62F3Zu+9ILur41bq5SjIfCG0\n" \
-                         "Z6DDRKBNEY6ny8wekgyB0BVwhj2BJsH/UnKQItjzZz+JMvIJWGtYOPH/meUvkYOa\n" \
-                         "5xMuhTcR1llVgW17Gep17N8UyFqw91Mu62Br1ieg4RwwhQ/XO+OAswxyHz4VVuyH\n" \
-                         "J2cAHZ16GRLfDomlWaqYAOqSFMpkj86a/MZyWr8SpmMH7LOSDCEUH8ZmvLV6Kd2S\n" \
-                         "X3D6wFD0TYBp0KaAS/hTzzrD57FdoiOSnFoNIsU+vgfWnMNxYBpoiTDGVeUI\n" \
-                         "-----END CERTIFICATE-----\n";
-
-
+// define two tasks for Blink & AnalogRead
+void T30G_task( void *pvParameters );
+//Function for SPIFFS
 void listDir(fs::FS &fs, const char * dirname, uint8_t levels) {
   Serial.printf("Listing directory: %s\r\n", dirname);
   File root = fs.open(dirname);
@@ -148,22 +95,6 @@ void listDir(fs::FS &fs, const char * dirname, uint8_t levels) {
     file = root.openNextFile();
   }
 }
-
-void readFile(fs::FS &fs, const char * path) {
-  Serial.printf("Reading file: %s\r\n", path);
-
-  File file = fs.open(path);
-  if (!file || file.isDirectory()) {
-    Serial.println("- failed to open file for reading");
-    return;
-  }
-
-  Serial.println("- read from file:");
-  while (file.available()) {
-    Serial.write(file.read());
-  }
-}
-
 void writeFile(fs::FS &fs, const char * path, const char * message) {
   Serial.printf("Writing file: %s\r\n", path);
 
@@ -179,7 +110,7 @@ void writeFile(fs::FS &fs, const char * path, const char * message) {
   }
 }
 
-
+//Setup WIFI according to global strings SSID and Password
 void setup_wifi() {
   if (WiFi.status() != WL_CONNECTED) {
     delay(10);
@@ -207,7 +138,6 @@ void setup_wifi() {
       Serial.println("Could not find such wifi, please recheck!!");
       return;
     }
-    //randomSeed(micros());
   }
   Serial.println("");
   Serial.println("WiFi connected");
@@ -215,6 +145,7 @@ void setup_wifi() {
   Serial.println(WiFi.localIP());
 }
 
+//Connect to aws using global strings
 void connectToAWS()
 {
   // Configure WiFiClientSecure to use the AWS certificates we generated
@@ -222,23 +153,26 @@ void connectToAWS()
 
   char cert[AWS_CERT_CRT.length() + 1];
   AWS_CERT_CRT.toCharArray(cert, AWS_CERT_CRT.length() + 1);
+  //Serial.println(AWS_CERT_CRT.equals(String(cert)));
   net.setCertificate(cert);
-
+  //Serial.println(2);
   char key[AWS_CERT_PRIVATE.length() + 1];
   AWS_CERT_PRIVATE.toCharArray(key, AWS_CERT_PRIVATE.length() + 1);
+  //Serial.println(AWS_CERT_PRIVATE.equals(String(key)));
   net.setPrivateKey(key);
-
+  //Serial.println(3);
   char endpt[AWS_IOT_ENDPOINT.length() + 1];
   AWS_IOT_ENDPOINT.toCharArray(endpt, AWS_IOT_ENDPOINT.length() + 1);
   // Connect to the MQTT broker on the AWS endpoint we defined earlier
   client.begin(endpt, 8883, net);
-
+  //Serial.println(4);
   // Try to connect to AWS and count how many times we retried.
   int retries = 0;
-  Serial.print("Connecting to AWS IOT");
 
   char thingname[AWS_IOT_THING_NAME.length() + 1];
   AWS_IOT_THING_NAME.toCharArray(thingname, AWS_IOT_THING_NAME.length() + 1);
+  //Serial.println(5);
+  Serial.print("Connecting to AWS IOT");
   while (!client.connect(thingname) && retries < AWS_MAX_RECONNECT_TRIES) {
     Serial.print(".");
     delay(100);
@@ -263,6 +197,7 @@ void connectToAWS()
   client.publish(publis, "hello from esp");
 }
 
+//Connect to NON iot platform using global strings
 void ConnecttoNonAws () {
   char BrAdd[BrokerAdd.length() + 1];
   BrokerAdd.toCharArray(BrAdd, BrokerAdd.length() + 1);
@@ -284,8 +219,6 @@ void ConnecttoNonAws () {
     delay(100);
     retries++;
   }
-  // Make sure that we did indeed successfully connect to the MQTT broker
-  // If not we just end the function and wait for the next loop.
   if (!client_esp.connected()) {
     Serial.println(" Timeout!");
     return;
@@ -296,6 +229,7 @@ void ConnecttoNonAws () {
   client_esp.subscribe(subscrib);
 }
 
+//Callback to recieve data from subscribed topic(AWS)
 void callback(String &topic, String &payload) {
   Serial.print("Message arrived [");
   Serial.print(topic);
@@ -309,6 +243,7 @@ void callback(String &topic, String &payload) {
   sen = true;
 }
 
+//Callback to recieve data from subscribed topic(NON AWS)
 void callback_NotAws(char* topic, byte* payload, unsigned int length) {
   Serial.print("Message arrived [");
   Serial.print(topic);
@@ -322,8 +257,11 @@ void callback_NotAws(char* topic, byte* payload, unsigned int length) {
   sen = true;
 }
 
-
+//Function to publish scanned devices (Raw_beacon-data format)
 bool SendData(String in) {
+  Serial.println(in.endsWith(";") ? "True" : "False");
+  if (!in.endsWith(";"))
+    return false;
   int vals = 0;
   for (int i = 0; i < in.length(); i++)
     if (in.charAt(i) == ';')
@@ -372,8 +310,8 @@ bool SendData(String in) {
   return false;
 }
 
+//Function to read all files and call functions accordingly
 void ReadFiles() {
-
   if (SPIFFS.exists("/ssid.txt") && SPIFFS.exists("/pass.txt")) {
     File _ssid = SPIFFS.open("/ssid.txt");
     ssid = "";
@@ -389,7 +327,6 @@ void ReadFiles() {
     _pass.close();
     ssid.trim();
     password.trim();
-
     setup_wifi();
 
     if (SPIFFS.exists("/Conn_type.txt") && WiFi.status() == WL_CONNECTED) {
@@ -471,10 +408,10 @@ void ReadFiles() {
           Serial.println(AWS_IOT_THING_NAME);
           Serial.print("End Point is: ");
           Serial.println(AWS_IOT_ENDPOINT);
-          Serial.print("Check Result for Cert : ");
-          Serial.println((AWS_CERT_CRT.equals(String(AWS_CERT_CRT_ck))) ? "true" : "false");
-          Serial.print("Check Result for Private Key : ");
-          Serial.println((AWS_CERT_PRIVATE.equals(String(AWS_CERT_PRIVATE_ck))) ? "true" : "false");
+          Serial.print("Certificate is: ");
+          Serial.println(AWS_CERT_CRT);
+          Serial.print("Private Key is: ");
+          Serial.println(AWS_CERT_PRIVATE);
           connectToAWS();
           client.onMessage(callback);
           conf = false;
@@ -535,7 +472,6 @@ void ReadFiles() {
 
           ConnecttoNonAws();
           conf = false;
-
         }
         else {
           Serial.println("Please Provide mqqt credentials");
@@ -555,6 +491,7 @@ void ReadFiles() {
 
 }
 
+//Check recieved command from iot platform and match it
 int checkCommand(String command) {
   for (int i = 0; i < 4; i++) {
     if (command.equalsIgnoreCase(commands[i]))
@@ -563,9 +500,9 @@ int checkCommand(String command) {
   return 0;
 }
 
+//setup
 void setup() {
   Serial.begin(115200);
-
   //For Recieving data
   Serial2.begin(115200, SERIAL_8N1, 16, 17);
   if (!SPIFFS.begin(FORMAT_SPIFFS_IF_FAILED)) {
@@ -576,8 +513,18 @@ void setup() {
   ReadFiles();
   Serial.println("reboot");
   listDir(SPIFFS, "/", 0);
-
+  // Now set up two tasks to run independently.
+  xTaskCreatePinnedToCore(
+    T30G_task
+    ,  "My T30G Task"   // A name just for humans
+    ,  10240  // This stack size can be checked & adjusted by reading the Stack Highwater
+    ,  NULL
+    ,  1  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
+    ,  NULL
+    ,  ARDUINO_RUNNING_CORE);
 }
+
+//Convert hex in char to hex int
 int hexCharToInt(char c) {
   int val = (int)c;
   if ((val >= 'A' && val <= 'F'))
@@ -586,304 +533,408 @@ int hexCharToInt(char c) {
 }
 
 void loop() {
-  while (conf) {
-    if (Serial2.available()) {
-      //char hexCar[2];
-      char c = Serial2.read();
-      //sprintf(hexCar, "%02X", c);
-      //Serial.println(hexCar);
-      if (c == 'X') {
-        Serial.println("Trying enter normal mode");
-        String val = "";
-        while (Serial2.available())
-        {
-          c = Serial2.read();
-          if (c != 0x06 && c >= 'a' && c <= 'z')
-            val += c;
-        }
-        if (val.equals("norm")) {
-          Serial.println("Entring normal mode");
-          conf = false;
-          ReadFiles();
-        }
-      }
-      if (c == 'B') {
-        String val = "";
-        while (c != 0x06) {
-          if (Serial2.available())
-          {
-            c = Serial2.read();
-            if (c != 0x06)
-              val += c;
-          }
-        }
-        Serial.println(val);
-        char val3[val.length() + 1];
-        val.toCharArray(val3, val.length() + 1);
 
-        writeFile(SPIFFS, "/ssid.txt", val3);
-      }
-      if (c == 'C') {
-        String val = "";
-        while (c != 0x06) {
-          if (Serial2.available())
-          {
-            c = Serial2.read();
-            if (c != 0x06)
-              val += c;
-          }
-        }
-        Serial.println(val);
-        char val3[val.length() + 1];
-        val.toCharArray(val3, val.length() + 1);
-        writeFile(SPIFFS, "/pass.txt", val3);
-      }
-      if (c == 'D') {
-        String val = "";
-        while (c != 0x06) {
-          if (Serial2.available())
-          {
-            c = Serial2.read();
-            if (c != 0x06)
-              val += c;
-          }
-        }
-        Serial.println(val);
-        char val3[val.length() + 1];
-        val.toCharArray(val3, val.length() + 1);
-        writeFile(SPIFFS, "/thing.txt", val3);
-      }
-      if (c == 'E') {
-        String val = "";
-        while (c != 0x06) {
-          if (Serial2.available())
-          {
-            c = Serial2.read();
-            if (c != 0x06)
-              val += c;
-          }
-        }
-        Serial.println(val);
-        char val3[val.length() + 1];
-        val.toCharArray(val3, val.length() + 1);
-        writeFile(SPIFFS, "/endpoint.txt", val3);
-      }
-      if (c == 'F') {
-        String val = "";
-        while (c != 0x06) {
-          if (Serial2.available())
-          {
-            c = Serial2.read();
-            if (c != 0x06)
-              val += c;
-          }
-        }
-        Serial.println(val);
-        char val3[val.length() + 1];
-        val.toCharArray(val3, val.length() + 1);
-        writeFile(SPIFFS, "/Cert.txt", val3);
-      }
-      if (c == 'G') {
-        String val = "";
-        while (c != 0x06) {
-          if (Serial2.available())
-          {
-            c = Serial2.read();
-            if (c != 0x06)
-              val += c;
-          }
-        }
-        Serial.println(val);
-        char val3[val.length() + 1];
-        val.toCharArray(val3, val.length() + 1);
-        writeFile(SPIFFS, "/PvtKey.txt", val3);
-      }
-      if (c == 'H') {
-        String val = "";
-        while (c != 0x06) {
-          if (Serial2.available())
-          {
-            c = Serial2.read();
-            if (c != 0x06)
-              val += c;
-          }
-        }
-        Serial.println(val);
-        char val3[val.length() + 1];
-        val.toCharArray(val3, val.length() + 1);
-        writeFile(SPIFFS, "/sub.txt", val3);
-      }
-      if (c == 'I') {
-        String val = "";
-        while (c != 0x06) {
-          if (Serial2.available())
-          {
-            c = Serial2.read();
-            if (c != 0x06)
-              val += c;
-          }
-        }
-        Serial.println(val);
-        char val3[val.length() + 1];
-        val.toCharArray(val3, val.length() + 1);
-        writeFile(SPIFFS, "/pub.txt", val3);
-      }
-      if (c == 'J') {
-        String val = "";
-        while (c != 0x06) {
-          if (Serial2.available())
-          {
-            c = Serial2.read();
-            if (c != 0x06)
-              val += c;
-          }
-        }
-        Serial.println(val);
-        char val3[val.length() + 1];
-        val.toCharArray(val3, val.length() + 1);
+}
+void T30G_task(void *pvParameters)  // This is a task.
+{
+  (void) pvParameters;
 
-        writeFile(SPIFFS, "/Conn_type.txt", val3);
-      }
-      if (c == 'K') {
-        String val = "";
-        while (c != 0x06) {
-          if (Serial2.available())
+  for (;;) // A Task shall never return or exit.
+  {
+    while (conf) {
+      //Recieve configuration from BMD
+      if (Serial2.available()) {
+        char c = Serial2.read();
+        if (c == 'X') {
+          Serial.println("Trying enter normal mode");
+          String val = "";
+          while (Serial2.available())
           {
             c = Serial2.read();
-            if (c != 0x06)
+            if (c != 0x06 && c >= 'a' && c <= 'z')
               val += c;
           }
-        }
-        Serial.println(val);
-        char val3[val.length() + 1];
-        val.toCharArray(val3, val.length() + 1);
-
-        writeFile(SPIFFS, "/Client_ID.txt", val3);
-      }
-      if (c == 'L') {
-        String val = "";
-        while (c != 0x06) {
-          if (Serial2.available())
-          {
-            c = Serial2.read();
-            if (c != 0x06)
-              val += c;
+          if (val.equals("norm")) {
+            Serial.println("Entring normal mode");
+            conf = false;
+            ReadFiles();
           }
         }
-        Serial.println(val);
-        char val3[val.length() + 1];
-        val.toCharArray(val3, val.length() + 1);
-
-        writeFile(SPIFFS, "/Username.txt", val3);
-      }
-      if (c == 'M') {
-        String val = "";
-        while (c != 0x06) {
-          if (Serial2.available())
-          {
-            c = Serial2.read();
-            if (c != 0x06)
-              val += c;
+        if (c == 'B') {
+          String val = "";
+          while (c != 0x06) {
+            if (Serial2.available())
+            {
+              c = Serial2.read();
+              if (c != 0x06)
+                val += c;
+            }
           }
+          Serial.println(val);
+          char val3[val.length() + 1];
+          val.toCharArray(val3, val.length() + 1);
+          writeFile(SPIFFS, "/ssid.txt", val3);
         }
-        Serial.println(val);
-        char val3[val.length() + 1];
-        val.toCharArray(val3, val.length() + 1);
-
-        writeFile(SPIFFS, "/User_pass.txt", val3);
-      }
-      if (c == 'N') {
-        String val = "";
-        while (c != 0x06) {
-          if (Serial2.available())
-          {
-            c = Serial2.read();
-            if (c != 0x06)
-              val += c;
+        if (c == 'C') {
+          String val = "";
+          while (c != 0x06) {
+            if (Serial2.available())
+            {
+              c = Serial2.read();
+              if (c != 0x06)
+                val += c;
+            }
           }
+          Serial.println(val);
+          char val3[val.length() + 1];
+          val.toCharArray(val3, val.length() + 1);
+          writeFile(SPIFFS, "/pass.txt", val3);
         }
-        Serial.println(val);
-        char val3[val.length() + 1];
-        val.toCharArray(val3, val.length() + 1);
-
-        writeFile(SPIFFS, "/Broker_Address.txt", val3);
-      }
-      if (c == 'O') {
-        String val = "";
-        while (c != 0x06) {
-          if (Serial2.available())
-          {
-            c = Serial2.read();
-            if (c != 0x06)
-              val += c;
+        if (c == 'D') {
+          String val = "";
+          while (c != 0x06) {
+            if (Serial2.available())
+            {
+              c = Serial2.read();
+              if (c != 0x06)
+                val += c;
+            }
           }
+          Serial.println(val);
+          char val3[val.length() + 1];
+          val.toCharArray(val3, val.length() + 1);
+          writeFile(SPIFFS, "/thing.txt", val3);
         }
-        Serial.println(val);
-        char val3[val.length() + 1];
-        val.toCharArray(val3, val.length() + 1);
+        if (c == 'E') {
+          String val = "";
+          while (c != 0x06) {
+            if (Serial2.available())
+            {
+              c = Serial2.read();
+              if (c != 0x06)
+                val += c;
+            }
+          }
+          Serial.println(val);
+          char val3[val.length() + 1];
+          val.toCharArray(val3, val.length() + 1);
+          writeFile(SPIFFS, "/endpoint.txt", val3);
+        }
+        if (c == 'F') {
+          String val = "";
+          while (c != 0x06) {
+            if (Serial2.available())
+            {
+              c = Serial2.read();
+              if (c != 0x06)
+                val += c;
+            }
+          }
+          Serial.println(val);
+          char val3[val.length() + 1];
+          val.toCharArray(val3, val.length() + 1);
+          writeFile(SPIFFS, "/Cert.txt", val3);
+        }
+        if (c == 'G') {
+          String val = "";
+          while (c != 0x06) {
+            if (Serial2.available())
+            {
+              c = Serial2.read();
+              if (c != 0x06)
+                val += c;
+            }
+          }
+          Serial.println(val);
+          char val3[val.length() + 1];
+          val.toCharArray(val3, val.length() + 1);
+          writeFile(SPIFFS, "/PvtKey.txt", val3);
+        }
+        if (c == 'H') {
+          String val = "";
+          while (c != 0x06) {
+            if (Serial2.available())
+            {
+              c = Serial2.read();
+              if (c != 0x06)
+                val += c;
+            }
+          }
+          Serial.println(val);
+          char val3[val.length() + 1];
+          val.toCharArray(val3, val.length() + 1);
+          writeFile(SPIFFS, "/sub.txt", val3);
+        }
+        if (c == 'I') {
+          String val = "";
+          while (c != 0x06) {
+            if (Serial2.available())
+            {
+              c = Serial2.read();
+              if (c != 0x06)
+                val += c;
+            }
+          }
+          Serial.println(val);
+          char val3[val.length() + 1];
+          val.toCharArray(val3, val.length() + 1);
+          writeFile(SPIFFS, "/pub.txt", val3);
+        }
+        if (c == 'J') {
+          String val = "";
+          while (c != 0x06) {
+            if (Serial2.available())
+            {
+              c = Serial2.read();
+              if (c != 0x06)
+                val += c;
+            }
+          }
+          Serial.println(val);
+          char val3[val.length() + 1];
+          val.toCharArray(val3, val.length() + 1);
 
-        writeFile(SPIFFS, "/Port.txt", val3);
+          writeFile(SPIFFS, "/Conn_type.txt", val3);
+        }
+        if (c == 'K') {
+          String val = "";
+          while (c != 0x06) {
+            if (Serial2.available())
+            {
+              c = Serial2.read();
+              if (c != 0x06)
+                val += c;
+            }
+          }
+          Serial.println(val);
+          char val3[val.length() + 1];
+          val.toCharArray(val3, val.length() + 1);
+
+          writeFile(SPIFFS, "/Client_ID.txt", val3);
+        }
+        if (c == 'L') {
+          String val = "";
+          while (c != 0x06) {
+            if (Serial2.available())
+            {
+              c = Serial2.read();
+              if (c != 0x06)
+                val += c;
+            }
+          }
+          Serial.println(val);
+          char val3[val.length() + 1];
+          val.toCharArray(val3, val.length() + 1);
+
+          writeFile(SPIFFS, "/Username.txt", val3);
+        }
+        if (c == 'M') {
+          String val = "";
+          while (c != 0x06) {
+            if (Serial2.available())
+            {
+              c = Serial2.read();
+              if (c != 0x06)
+                val += c;
+            }
+          }
+          Serial.println(val);
+          char val3[val.length() + 1];
+          val.toCharArray(val3, val.length() + 1);
+
+          writeFile(SPIFFS, "/User_pass.txt", val3);
+        }
+        if (c == 'N') {
+          String val = "";
+          while (c != 0x06) {
+            if (Serial2.available())
+            {
+              c = Serial2.read();
+              if (c != 0x06)
+                val += c;
+            }
+          }
+          Serial.println(val);
+          char val3[val.length() + 1];
+          val.toCharArray(val3, val.length() + 1);
+
+          writeFile(SPIFFS, "/Broker_Address.txt", val3);
+        }
+        if (c == 'O') {
+          String val = "";
+          while (c != 0x06) {
+            if (Serial2.available())
+            {
+              c = Serial2.read();
+              if (c != 0x06)
+                val += c;
+            }
+          }
+          Serial.println(val);
+          char val3[val.length() + 1];
+          val.toCharArray(val3, val.length() + 1);
+
+          writeFile(SPIFFS, "/Port.txt", val3);
+        }
       }
     }
-  }
-  if (Con_type)
-    client.loop();
-  else
-    client_esp.loop();
+    if (Con_type)
+      client.loop();
+    else
+      client_esp.loop();
 
-  if (sen) {
-    StaticJsonDocument<200> doc;
+    if (sen) {
+      //if we recieved command from IOT platform, we need to send it to BMD
+      StaticJsonDocument<200> doc;
+      char json[sendata.length() + 1];
+      sendata.toCharArray(json, sendata.length() + 1);
+      DeserializationError error = deserializeJson(doc, json);
 
-    char json[sendata.length() + 1];
-    sendata.toCharArray(json, sendata.length() + 1);
-    DeserializationError error = deserializeJson(doc, json);
-
-    // Test if parsing succeeds.
-    if (error) {
-      Serial.print(F("deserializeJson() failed: "));
-      Serial.println(error.c_str());
-    }
-    else {
-      //deserializeJson(doc, json);
-      String command = doc["Command"];
-      String _mac = doc["Mac"];
-      String ser = doc["Service_UUID"];
-      String chr = doc["Characteristic_UUID"];
-      String dat = doc["Data"];
-      String Data = _mac + ser + chr + dat;
-
-      int _command = checkCommand(command);
-      bool _valid = false;
-      if (_command == 1 && Data.length() >= 78) {
-        _valid = true;
-      }
-      else if (_command == 2 && Data.length() == 78) {
-        _valid = true;
-      }
-      else if (_command == 3 && Data.length() == 80) {
-        _valid = true;
-      }
-      if (_valid) {
-        Serial.print("Sending: ");
-        Serial.print("(Command) ");
-        Serial.print(_command);
-        Serial.print(" (Data) ");
-        Serial.println(Data);
-        Serial2.write('s');
-        Serial2.write(_command);
-        Serial2.print(Data);
-        //        Serial2.print(mac);
-        //        Serial2.print(ser);
-        //        Serial2.print(chr);
-        //        Serial2.print(dat);
-
-        //        for (int i = 0; i < Data.length(); i++) {
-        //          Serial2.write((char)Data[i]);
-        //        }
-        Serial2.write('\n');
+      // Test if parsing succeeds.
+      if (error) {
+        Serial.print(F("deserializeJson() failed: "));
+        Serial.println(error.c_str());
       }
       else {
-        Serial.println("Wrong Data ");
+        //deserializeJson(doc, json);
+        String command = doc["Command"];
+        String _mac = doc["Mac"];
+        String ser = doc["Service_UUID"];
+        String chr = doc["Characteristic_UUID"];
+        String dat = doc["Data"];
+        String Data = _mac + ser + chr + dat;
+
+        int _command = checkCommand(command);
+        bool _valid = false;
+        if (_command == 1 && Data.length() >= 78) {
+          _valid = true;
+        }
+        else if (_command == 2 && Data.length() == 78) {
+          _valid = true;
+        }
+        else if (_command == 3 && Data.length() == 80) {
+          _valid = true;
+        }
+        if (_valid) {
+          Serial.print("Sending: ");
+          Serial.print("(Command) ");
+          Serial.print(_command);
+          Serial.print(" (Data) ");
+          Serial.println(Data);
+          Serial2.write('s');
+          Serial2.write(_command);
+          Serial2.print(Data);
+          Serial2.write('\n');
+        }
+        else {
+          //If command is wrong
+          Serial.println("Wrong Data ");
+          StaticJsonDocument<300> doc;
+          WiFi.macAddress(mac);
+          char hexCar[2];
+          String mac_hex = "";
+          for (int i = 0; i < 6; i++) {
+            sprintf(hexCar, "%02X", mac[i]);
+            mac_hex += hexCar;
+          }
+          rd.toUpperCase();
+          doc["MAC"] = mac_hex;
+          doc["RSSI"] = WiFi.RSSI();
+          String LocalIP = String() + WiFi.localIP()[0] + "." + WiFi.localIP()[1] + "." + WiFi.localIP()[2] + "." + WiFi.localIP()[3];
+          doc["IP"] = LocalIP;
+          doc["Ver"] = ver;
+          doc["MSG_Type"] = "Error Response";
+          doc["Error_Type"] = "Invalid Data Entered";
+          String pub;
+          serializeJsonPretty(doc, pub);
+          //Convert to char array to publish
+          char pubdata[pub.length() + 1];
+          pub.toCharArray(pubdata, pub.length() + 1);
+          Serial.println(pubdata);
+
+          char publis[TOPIC_PUB.length() + 1];
+          TOPIC_PUB.toCharArray(publis, TOPIC_PUB.length() + 1);
+          bool _sendData;
+          if (Con_type)
+            _sendData = client.publish(publis, pubdata);
+          else
+            _sendData = (client_esp.publish(publis, pubdata));
+          if (_sendData) {
+            Serial.println("Data Published");
+            noErr = 0;
+          }
+          else {
+            Serial.println("Error in publishing data");
+            noErr ++;
+          }
+        }
+      }
+      sen = false;
+      sendata = "";
+    }
+    if (noErr > MAX_ERROR_THRESHOLD) {
+      //if we could not publish data continuosly and limit is reached
+      Serial.println("Limit Reached");
+      WiFi.disconnect();
+      if (Con_type)
+        client.disconnect();
+      else
+        client_esp.disconnect();
+      ReadFiles();
+      noErr = 0;
+    }
+    if (Serial2.available() > 0) {
+      //If BMD sends us data in non Config mode
+      char c;
+      c = Serial2.read();
+      Serial.print(c);
+      if (c == 'Y') {
+        //Normal scan data (Raw adv data)
+        rd = "";
+        int i = 0;
+        uint16_t len = 0;
+        while (i < 2) {
+          if (Serial2.available()) {
+            c = Serial2.read();
+            uint8_t len1 = (uint8_t)c;
+            len = (uint16_t)(len + len1 * (pow(256, i)));
+            i++;
+          }
+        }
+        Serial.println(len);
+        while (c != '\n') {
+          if (Serial2.available()) {
+            c = Serial2.read();
+            rd += (char)c;
+            if (c == 'Y')
+              break;
+          }
+        }
+        Serial.print("Data Recieved : ");
+        rd.trim();
+        Serial.println(rd);
+        if (SendData(rd)) {
+          Serial.println("Data Published");
+          noErr = 0;
+        }
+        else {
+          Serial.println("Error in publishing data");
+          noErr ++;
+        }
+      }
+      else if (c == 'E') {
+        //There is some error in processing command sent to BMD
+        rd = "";
+        while (c != '\n') {
+          if (Serial2.available())
+          {
+            c = Serial2.read();
+            Serial.print(c);
+            rd += (char) c;
+          }
+        }
+        Serial.println("Error Message Recieved");
+        Serial.println(rd);
         StaticJsonDocument<300> doc;
         WiFi.macAddress(mac);
         char hexCar[2];
@@ -899,7 +950,32 @@ void loop() {
         doc["IP"] = LocalIP;
         doc["Ver"] = ver;
         doc["MSG_Type"] = "Error Response";
-        doc["Error_Type"] = "Invalid Data Entered";
+        switch (rd.charAt(0)) {
+          case '1':
+            doc["Error_Type"] = "Service Not Found";
+            break;
+          case '2':
+            doc["Error_Type"] = "Characteristic  Not Found";
+            break;
+          case '3':
+            doc["Error_Type"] = "Write Failed: Permissions Not Found";
+            break;
+          case '4':
+            doc["Error_Type"] = "Read Failed: Permission Not Found";
+            break;
+          case '5':
+            doc["Error_Type"] = "Read Failed: Could Not Read";
+            break;
+          case '6':
+            doc["Error_Type"] = "Subscription Failed: Permission Not Found";
+            break;
+          case '7':
+            doc["Error_Type"] = "Mac Address not Found: Timeout";
+            break;
+          default:
+            doc["Error_Type"] = "Unknown Error";
+            break;
+        }
         String pub;
         serializeJsonPretty(doc, pub);
         //Convert to char array to publish
@@ -923,290 +999,159 @@ void loop() {
           noErr ++;
         }
       }
-    }
-    sen = false;
-    sendata = "";
-  }
-  if (noErr > MAX_ERROR_THRESHOLD) {
-    Serial.println("Limit Reached");
-    if (WiFi.status() != WL_CONNECTED) {
-      if (Con_type)
-        client.disconnect();
-      else
-        client_esp.disconnect();
-      WiFi.disconnect();
-      setup_wifi();
-      if (Con_type)
-        connectToAWS();
-      else
-        ConnecttoNonAws();
-      noErr = 0;
-    }
-    else if (Con_type && !client.connected()) {
-      client.disconnect();
-      connectToAWS();
-    }
-    else if (!Con_type && !client_esp.connected()) {
-      client_esp.disconnect();
-      ConnecttoNonAws();
-    }
-  }
-  if (Serial2.available() > 0) {
-    char c;
-    c = Serial2.read();
-    Serial.print(c);
-    if (c == 'Y') {
-      rd = "";
-      int i = 0;
-      uint16_t len = 0;
-      while (i < 2) {
-        if (Serial2.available()) {
-          c = Serial2.read();
-          uint8_t len1 = (uint8_t)c;
-          len = (uint16_t)(len + len1 * (pow(256, i)));
-          i++;
+      else if (c == 'U') {
+        //BMD sent us notification data in response to command or due to high flag
+        rd = "";
+        while (c != '\n') {
+          if (Serial2.available())
+          {
+            c = Serial2.read();
+            Serial.print(c);
+            rd += (char) c;
+          }
+        }
+        Serial.println("Notify Data Recieved");
+        rd.trim();
+        Serial.println(rd);
+        if (rd.endsWith(";")) {
+          StaticJsonDocument<700> doc;
+          WiFi.macAddress(mac);
+          char hexCar[2];
+          String mac_hex = "";
+          for (int i = 0; i < 6; i++) {
+            sprintf(hexCar, "%02X", mac[i]);
+            mac_hex += hexCar;
+          }
+          rd.toUpperCase();
+          doc["MAC"] = mac_hex;
+          doc["RSSI"] = WiFi.RSSI();
+          String LocalIP = String() + WiFi.localIP()[0] + "." + WiFi.localIP()[1] + "." + WiFi.localIP()[2] + "." + WiFi.localIP()[3];
+          doc["IP"] = LocalIP;
+          doc["Ver"] = ver;
+          String strBidHex = rd.substring(1, 3);
+          int val1 = hexCharToInt(strBidHex.charAt(0));
+          int val2 = hexCharToInt(strBidHex.charAt(1));
+          uint8_t intBid = (((val1) << 4) & (0xF0)) + ((val2) & 0x0F);
+          doc["BID"] = intBid;
+          String strMidHex = rd.substring(3, 5);
+          val1 = hexCharToInt(strMidHex.charAt(0));
+          val2 = hexCharToInt(strMidHex.charAt(1));
+          uint8_t intMid = (((val1) << 4) & (0xF0)) + ((val2) & 0x0F);
+          doc["MID"] = intMid;
+          if (rd.charAt(0) == 'R') {
+            // Due to HIGH flag
+            doc["Device_MAC"] = rd.substring(7, 19);
+            doc["MSG_Type"] = "Records";
+            String strCntHex = rd.substring(5, 7);
+            val1 = hexCharToInt(strCntHex.charAt(0));
+            val2 = hexCharToInt(strCntHex.charAt(1));
+            uint8_t intCnt = (((val1) << 4) & (0xF0)) + ((val2) & 0x0F);
+            doc["R_Record_Count"] = intCnt;
+            doc["Records"] = rd.substring(19, rd.length());
+          }
+          if (rd.charAt(0) == 'N') {
+            //Due to Notify Command
+            doc["Device_MAC"] = rd.substring(5, 17);
+            doc["MSG_Type"] = "NOTIFY DATA";
+            doc["Packet"] = rd.substring(17, rd.length());
+          }
+          String pub;
+          serializeJsonPretty(doc, pub);
+          //Convert to char array to publish
+          char pubdata[pub.length() + 1];
+          pub.toCharArray(pubdata, pub.length() + 1);
+          Serial.println(pubdata);
+
+          char publis[TOPIC_PUB.length() + 1];
+          TOPIC_PUB.toCharArray(publis, TOPIC_PUB.length() + 1);
+          bool _sendData;
+          if (Con_type)
+            _sendData = client.publish(publis, pubdata);
+          else
+            _sendData = (client_esp.publish(publis, pubdata));
+          if (_sendData) {
+            Serial.println("Data Published");
+            noErr = 0;
+          }
+          else {
+            Serial.println("Error in publishing data");
+            noErr ++;
+          }
         }
       }
-      i = 0;
-      Serial.println(len);
-      while (i < len) {
-        if (Serial2.available()) {
-          c = Serial2.read();
-          rd += (char)c;
-          i++;
+      else if (c == 'W') {
+        //BMD sent read bytes according to command
+        rd = "";
+        while (c != '\n') {
+          if (Serial2.available())
+          {
+            c = Serial2.read();
+            Serial.print(c);
+            rd += (char) c;
+          }
+        }
+        Serial.println("Read Data Recieved");
+        rd.trim();
+        Serial.println(rd);
+        if (rd.endsWith(";")) {
+          StaticJsonDocument<300> doc;
+          WiFi.macAddress(mac);
+          char hexCar[2];
+          String mac_hex = "";
+          for (int i = 0; i < 6; i++) {
+            sprintf(hexCar, "%02X", mac[i]);
+            mac_hex += hexCar;
+          }
+          rd.toUpperCase();
+          doc["MAC"] = mac_hex;
+          doc["RSSI"] = WiFi.RSSI();
+          String LocalIP = String() + WiFi.localIP()[0] + "." + WiFi.localIP()[1] + "." + WiFi.localIP()[2] + "." + WiFi.localIP()[3];
+          doc["IP"] = LocalIP;
+          doc["Ver"] = ver;
+          doc["Device_MAC"] = rd.substring(0, 12);
+          doc["MSG_Type"] = "READ FROM DEVICE";
+          doc["Data"] = rd.substring(12, rd.length());
+          String pub;
+          serializeJsonPretty(doc, pub);
+          //Convert to char array to publish
+          char pubdata[pub.length() + 1];
+          pub.toCharArray(pubdata, pub.length() + 1);
+          Serial.println(pubdata);
+
+          char publis[TOPIC_PUB.length() + 1];
+          TOPIC_PUB.toCharArray(publis, TOPIC_PUB.length() + 1);
+          bool _sendData;
+          if (Con_type)
+            _sendData = client.publish(publis, pubdata);
+          else
+            _sendData = (client_esp.publish(publis, pubdata));
+          if (_sendData) {
+            Serial.println("Data Published");
+          }
+          else {
+            Serial.println("Error in publishing data");
+          }
         }
       }
-      Serial.print("Data Recieved : ");
-      Serial.println(rd);
-      if (SendData(rd)) {
-        Serial.println("Data Published");
-        noErr = 0;
-      }
-      else {
-        Serial.println("Error in publishing data");
-        noErr ++;
-      }
-    }
-    else if (c == 'E') {
-      rd = "";
-      while (c != '\n') {
-        if (Serial2.available())
-        {
+      else if (c == 'Z') {
+        Serial.println("Trying enter config mode");
+        String val = "";
+        while (Serial2.available()) {
           c = Serial2.read();
-          Serial.print(c);
-          rd += (char) c;
+          if (c != 0x06 && (c >= 'a' && c <= 'z'))
+            val += c;
+        }
+        if (val.equals("conf")) {
+          //BMD is going in Configuration mode, so we need to adjust
+          Serial.println("Entring Configuration mode");
+          conf = true;
+          WiFi.disconnect();
+          if (Con_type)
+            client.disconnect();
+          else
+            client_esp.disconnect();
         }
       }
-      Serial.println("Error Message Recieved");
-      Serial.println(rd);
-      StaticJsonDocument<300> doc;
-      WiFi.macAddress(mac);
-      char hexCar[2];
-      String mac_hex = "";
-      for (int i = 0; i < 6; i++) {
-        sprintf(hexCar, "%02X", mac[i]);
-        mac_hex += hexCar;
-      }
-      rd.toUpperCase();
-      doc["MAC"] = mac_hex;
-      doc["RSSI"] = WiFi.RSSI();
-      String LocalIP = String() + WiFi.localIP()[0] + "." + WiFi.localIP()[1] + "." + WiFi.localIP()[2] + "." + WiFi.localIP()[3];
-      doc["IP"] = LocalIP;
-      doc["Ver"] = ver;
-      doc["MSG_Type"] = "Error Response";
-      switch (rd.charAt(0)) {
-        case '1':
-          doc["Error_Type"] = "Service Not Found";
-          break;
-        case '2':
-          doc["Error_Type"] = "Characteristic  Not Found";
-          break;
-        case '3':
-          doc["Error_Type"] = "Write Failed: Permissions Not Found";
-          break;
-        case '4':
-          doc["Error_Type"] = "Read Failed: Permission Not Found";
-          break;
-        case '5':
-          doc["Error_Type"] = "Read Failed: Could Not Read";
-          break;
-        case '6':
-          doc["Error_Type"] = "Subscription Failed: Permission Not Found";
-          break;
-        case '7':
-          doc["Error_Type"] = "Mac Address not Found: Timeout";
-          break;
-        default:
-          doc["Error_Type"] = "Unknown Error";
-          break;
-      }
-      String pub;
-      serializeJsonPretty(doc, pub);
-      //Convert to char array to publish
-      char pubdata[pub.length() + 1];
-      pub.toCharArray(pubdata, pub.length() + 1);
-      Serial.println(pubdata);
-
-      char publis[TOPIC_PUB.length() + 1];
-      TOPIC_PUB.toCharArray(publis, TOPIC_PUB.length() + 1);
-      bool _sendData;
-      if (Con_type)
-        _sendData = client.publish(publis, pubdata);
-      else
-        _sendData = (client_esp.publish(publis, pubdata));
-      if (_sendData) {
-        Serial.println("Data Published");
-        noErr = 0;
-      }
-      else {
-        Serial.println("Error in publishing data");
-        noErr ++;
-      }
     }
-    else if (c == 'U') {
-      rd = "";
-      while (c != '\n') {
-        if (Serial2.available())
-        {
-          c = Serial2.read();
-          Serial.print(c);
-          rd += (char) c;
-        }
-      }
-      Serial.println("Notify Data Recieved");
-      Serial.println(rd);
-      StaticJsonDocument<700> doc;
-      WiFi.macAddress(mac);
-      char hexCar[2];
-      String mac_hex = "";
-      for (int i = 0; i < 6; i++) {
-        sprintf(hexCar, "%02X", mac[i]);
-        mac_hex += hexCar;
-      }
-      rd.toUpperCase();
-      doc["MAC"] = mac_hex;
-      doc["RSSI"] = WiFi.RSSI();
-      String LocalIP = String() + WiFi.localIP()[0] + "." + WiFi.localIP()[1] + "." + WiFi.localIP()[2] + "." + WiFi.localIP()[3];
-      doc["IP"] = LocalIP;
-      doc["Ver"] = ver;
-      String strBidHex = rd.substring(1, 3);
-      int val1 = hexCharToInt(strBidHex.charAt(0));
-      int val2 = hexCharToInt(strBidHex.charAt(1));
-      uint8_t intBid = (((val1) << 4) & (0xF0)) + ((val2) & 0x0F);
-      doc["BID"] = intBid;
-      String strMidHex = rd.substring(3, 5);
-      val1 = hexCharToInt(strMidHex.charAt(0));
-      val2 = hexCharToInt(strMidHex.charAt(1));
-      uint8_t intMid = (((val1) << 4) & (0xF0)) + ((val2) & 0x0F);
-      doc["MID"] = intMid;
-      if (rd.charAt(0) == 'R') {
-        doc["Device_MAC"] = rd.substring(7, 19);
-        doc["MSG_Type"] = "Records";
-        String strCntHex = rd.substring(5, 7);
-        val1 = hexCharToInt(strCntHex.charAt(0));
-        val2 = hexCharToInt(strCntHex.charAt(1));
-        uint8_t intCnt = (((val1) << 4) & (0xF0)) + ((val2) & 0x0F);
-        doc["R_Record_Count"] = intCnt;
-        doc["Records"] = rd.substring(19, rd.length() - 1);
-      }
-      if (rd.charAt(0) == 'N') {
-        doc["Device_MAC"] = rd.substring(5, 17);
-        doc["MSG_Type"] = "NOTIFY DATA";
-        doc["Packet"] = rd.substring(17, rd.length() - 1);
-      }
-      String pub;
-      serializeJsonPretty(doc, pub);
-      //Convert to char array to publish
-      char pubdata[pub.length() + 1];
-      pub.toCharArray(pubdata, pub.length() + 1);
-      Serial.println(pubdata);
-
-      char publis[TOPIC_PUB.length() + 1];
-      TOPIC_PUB.toCharArray(publis, TOPIC_PUB.length() + 1);
-      bool _sendData;
-      if (Con_type)
-        _sendData = client.publish(publis, pubdata);
-      else
-        _sendData = (client_esp.publish(publis, pubdata));
-      if (_sendData) {
-        Serial.println("Data Published");
-        noErr = 0;
-      }
-      else {
-        Serial.println("Error in publishing data");
-        noErr ++;
-      }
-    }
-    else if (c == 'W') {
-      rd = "";
-      while (c != '\n') {
-        if (Serial2.available())
-        {
-          c = Serial2.read();
-          Serial.print(c);
-          rd += (char) c;
-        }
-      }
-      Serial.println("Read Data Recieved");
-      Serial.println(rd);
-      StaticJsonDocument<300> doc;
-      WiFi.macAddress(mac);
-      char hexCar[2];
-      String mac_hex = "";
-      for (int i = 0; i < 6; i++) {
-        sprintf(hexCar, "%02X", mac[i]);
-        mac_hex += hexCar;
-      }
-      rd.toUpperCase();
-      doc["MAC"] = mac_hex;
-      doc["RSSI"] = WiFi.RSSI();
-      String LocalIP = String() + WiFi.localIP()[0] + "." + WiFi.localIP()[1] + "." + WiFi.localIP()[2] + "." + WiFi.localIP()[3];
-      doc["IP"] = LocalIP;
-      doc["Ver"] = ver;
-      doc["Device_MAC"] = rd.substring(0, 12);
-      doc["MSG_Type"] = "READ FROM DEVICE";
-      doc["Data"] = rd.substring(12, rd.length() - 1);
-      String pub;
-      serializeJsonPretty(doc, pub);
-      //Convert to char array to publish
-      char pubdata[pub.length() + 1];
-      pub.toCharArray(pubdata, pub.length() + 1);
-      Serial.println(pubdata);
-
-      char publis[TOPIC_PUB.length() + 1];
-      TOPIC_PUB.toCharArray(publis, TOPIC_PUB.length() + 1);
-      bool _sendData;
-      if (Con_type)
-        _sendData = client.publish(publis, pubdata);
-      else
-        _sendData = (client_esp.publish(publis, pubdata));
-      if (_sendData) {
-        Serial.println("Data Published");
-      }
-      else {
-        Serial.println("Error in publishing data");
-      }
-    }
-    else if (c == 'Z') {
-      Serial.println("Trying enter config mode");
-
-      String val = "";
-      while (Serial2.available()) {
-        c = Serial2.read();
-        if (c != 0x06 && (c >= 'a' && c <= 'z'))
-          val += c;
-      }
-      if (val.equals("conf")) {
-        Serial.println("Entring Configuration mode");
-        conf = true;
-        WiFi.disconnect();
-        if (Con_type)
-          client.disconnect();
-        else
-          client_esp.disconnect();
-      }
-      //conf = true;
-    }
-
   }
 }
